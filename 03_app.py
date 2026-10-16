@@ -52,8 +52,12 @@ try:
     def son_5_mac_formu(df, takim):
         # Takımın oynadığı son 5 maçı kronolojik olarak bul
         takim_maclari = df[(df['HomeTeam'] == takim) | (df['AwayTeam'] == takim)].tail(5)
-        sut_toplam, isabet_toplam = 0, 0
         
+        # Eğer takımın verisi yoksa (örn. yeni çıkmış ve maç yapmamışsa) hata vermesin
+        if len(takim_maclari) == 0:
+            return 0, 0
+            
+        sut_toplam, isabet_toplam = 0, 0
         for _, row in takim_maclari.iterrows():
             if row['HomeTeam'] == takim:
                 sut_toplam += row['HS']
@@ -62,7 +66,7 @@ try:
                 sut_toplam += row['AS']
                 isabet_toplam += row['AST']
                 
-        return sut_toplam / 5, isabet_toplam / 5
+        return sut_toplam / len(takim_maclari), isabet_toplam / len(takim_maclari)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -85,23 +89,24 @@ try:
             beklenen_dep = model.predict(ornek_dep)[0]
             beklenen_toplam = beklenen_ev + beklenen_dep
 
-            st.subheader(f"📊 Beklenen Değerler (λ)")
+            st.subheader("📊 Beklenen Değerler (λ)")
             m1, m2, m3 = st.columns(3)
-            # Metriklerde takımların güncel formlarını da gösteriyoruz
+            # Metriklerde takımların isabetli şut formları doğru şekilde ayrıldı
             m1.metric(label=f"{h_takim} Korner", value=f"{beklenen_ev:.2f}", delta=f"Son 5 Maç: {h_isabet:.1f} İsabetli Şut")
             m2.metric(label=f"{a_takim} Korner", value=f"{beklenen_dep:.2f}", delta=f"Son 5 Maç: {a_isabet:.1f} İsabetli Şut", delta_color="off")
             m3.metric(label="Toplam Korner", value=f"{beklenen_toplam:.2f}")
 
             st.divider()
-            st.subheader("📈 Güncel Korner Olasılık Dağılımı")
+            # Başlıktan PMF kelimesi çıkarıldı
+            st.subheader("📈 Toplam Korner Olasılık Dağılımı")
             
-            pmf_verileri = {}
-            for k in range(5, 16):
-                olasilik = poisson.pmf(k, beklenen_toplam) * 100
-                pmf_verileri[f"{k} Korner"] = olasilik
-
-            chart_df = pd.DataFrame(list(pmf_verileri.values()), index=list(pmf_verileri.keys()), columns=["İhtimal (%)"])
-            st.bar_chart(chart_df)
+            # X ekseninin düzgün sıralanması için metin (string) yerine sayısal (integer) index kullanıldı
+            df_chart = pd.DataFrame({
+                "Korner Sayısı": range(5, 16),
+                "İhtimal (%)": [poisson.pmf(k, beklenen_toplam) * 100 for k in range(5, 16)]
+            }).set_index("Korner Sayısı")
+            
+            st.bar_chart(df_chart)
 
 except Exception as e:
     st.error(f"Veri çekilirken bir hata oluştu. Sezon başı verisi eksik olabilir. Detay: {e}")
