@@ -2,13 +2,12 @@ import streamlit as st
 import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import poisson
-import os
 
-# Sayfa Ayarları
-st.set_page_config(page_title="Korner Tahmin Motoru", layout="centered")
-st.title("⚽ Korner Beklentisi (Poisson) Modeli")
+st.set_page_config(page_title="Korner Tahmin Motoru PRO", layout="centered")
+st.title("⚽ Korner Beklentisi (Poisson) PRO")
+st.markdown("Bu model; takımların **son 5 maçlık güncel formunu** ve **isabetli şut** (kalite) istatistiklerini baz alarak canlı veri üzerinden çalışır.")
 
-# Lig Veritabanı
+# Lig URL Veritabanı
 ligler = {
     "İngiltere Premier Lig": "E0",
     "Türkiye Süper Lig": "T1",
@@ -18,79 +17,91 @@ ligler = {
     "Fransa Ligue 1": "F1"
 }
 
-# Yan menüden lig seçimi
 st.sidebar.header("1. Lig Seçimi")
 secilen_lig_adi = st.sidebar.selectbox("Ligi Belirleyin:", list(ligler.keys()))
 kod = ligler[secilen_lig_adi]
 
-dosya_gecen = f"{kod}_2526.csv"
-dosya_bu = f"{kod}_2627.csv"
+url_gecen = f"https://www.football-data.co.uk/mmz4281/2526/{kod}.csv"
+url_bu = f"https://www.football-data.co.uk/mmz4281/2627/{kod}.csv"
 
-# Dosya kontrolü ve Model Eğitimi
-if not os.path.exists(dosya_gecen) or not os.path.exists(dosya_bu):
-    st.error(f"Hata: {dosya_gecen} veya {dosya_bu} bulunamadı. Lütfen CSV dosyalarının klasörde olduğundan emin olun.")
-else:
-    # Veriyi yükle ve cache'e al (uygulama hızlansın diye)
-    @st.cache_data
-    def veri_yukle_ve_egit(kod_gecen, kod_bu):
-        df_gecen = pd.read_csv(kod_gecen)
-        df_bu = pd.read_csv(kod_bu)
-        df = pd.concat([df_gecen, df_bu], ignore_index=True)
-        
-        gerekli = df[['HomeTeam', 'AwayTeam', 'HC', 'AC', 'HS', 'AS']].dropna()
-        ev = pd.DataFrame({'Takim': gerekli['HomeTeam'], 'Rakip': gerekli['AwayTeam'], 'Saha': 'Ev', 'Korner': gerekli['HC'], 'Sut': gerekli['HS']})
-        dep = pd.DataFrame({'Takim': gerekli['AwayTeam'], 'Rakip': gerekli['HomeTeam'], 'Saha': 'Dep', 'Korner': gerekli['AC'], 'Sut': gerekli['AS']})
-        matris = pd.concat([ev, dep], ignore_index=True)
-        
-        egitilmis_model = smf.poisson("Korner ~ Takim + Rakip + Saha + Sut", data=matris).fit(disp=False)
-        takimlar = sorted(gerekli['HomeTeam'].unique())
-        return egitilmis_model, takimlar, ev, dep
+# Veriyi canlı URL'den çek ve hız için 1 saat (3600 sn) cache'de tut
+@st.cache_data(ttl=3600)
+def veri_cek_ve_egit(url1, url2):
+    df_gecen = pd.read_csv(url1)
+    df_bu = pd.read_csv(url2)
+    df = pd.concat([df_gecen, df_bu], ignore_index=True)
+    
+    # İsabetli şutları da (HST, AST) dahil ediyoruz
+    gerekli = df[['HomeTeam', 'AwayTeam', 'HC', 'AC', 'HS', 'AS', 'HST', 'AST']].dropna()
+    
+    ev = pd.DataFrame({'Takim': gerekli['HomeTeam'], 'Rakip': gerekli['AwayTeam'], 'Saha': 'Ev', 'Korner': gerekli['HC'], 'Sut': gerekli['HS'], 'IsabetliSut': gerekli['HST']})
+    dep = pd.DataFrame({'Takim': gerekli['AwayTeam'], 'Rakip': gerekli['HomeTeam'], 'Saha': 'Dep', 'Korner': gerekli['AC'], 'Sut': gerekli['AS'], 'IsabetliSut': gerekli['AST']})
+    matris = pd.concat([ev, dep], ignore_index=True)
+    
+    # Model artık hem şut hem isabetli şutu dikkate alıyor
+    egitilmis_model = smf.poisson("Korner ~ Takim + Rakip + Saha + Sut + IsabetliSut", data=matris).fit(disp=False)
+    takimlar = sorted(gerekli['HomeTeam'].unique())
+    return egitilmis_model, takimlar, gerekli
 
-    # Modeli çalıştır
-    model, gecerli_takimlar, ev_df, dep_df = veri_yukle_ve_egit(dosya_gecen, dosya_bu)
-
-    st.success(f"✅ {secilen_lig_adi} veri seti yüklendi ve Poisson modeli eğitildi.")
+try:
+    model, gecerli_takimlar, ham_veri = veri_cek_ve_egit(url_gecen, url_bu)
+    st.success(f"✅ {secilen_lig_adi} güncel verileri canlı olarak çekildi ve matris eğitildi.")
     st.divider()
 
-    # Takım Seçimleri (Dropdown)
+    # Son 5 Maç Formunu Hesaplayan Fonksiyon
+    def son_5_mac_formu(df, takim):
+        # Takımın oynadığı son 5 maçı kronolojik olarak bul
+        takim_maclari = df[(df['HomeTeam'] == takim) | (df['AwayTeam'] == takim)].tail(5)
+        sut_toplam, isabet_toplam = 0, 0
+        
+        for _, row in takim_maclari.iterrows():
+            if row['HomeTeam'] == takim:
+                sut_toplam += row['HS']
+                isabet_toplam += row['HST']
+            else:
+                sut_toplam += row['AS']
+                isabet_toplam += row['AST']
+                
+        return sut_toplam / 5, isabet_toplam / 5
+
     col1, col2 = st.columns(2)
     with col1:
         h_takim = st.selectbox("🏠 Ev Sahibi (H):", gecerli_takimlar)
     with col2:
-        a_takim = st.selectbox("✈️ Deplasman (A):", reversed(gecerli_takimlar)) # Aynı takım denk gelmesin diye ters çevrildi
+        a_takim = st.selectbox("✈️ Deplasman (A):", reversed(gecerli_takimlar))
 
-    if st.button("🚀 Olasılıkları Hesapla"):
+    if st.button("🚀 Canlı Olasılıkları Hesapla"):
         if h_takim == a_takim:
             st.warning("Ev sahibi ve deplasman takımı aynı olamaz!")
         else:
-            # Şut beklentilerini hesapla
-            h_ortalama_sut = ev_df[ev_df['Takim'] == h_takim]['Sut'].mean()
-            a_ortalama_sut = dep_df[dep_df['Takim'] == a_takim]['Sut'].mean()
+            # Takımların son 5 maçlık güncel formunu çekiyoruz
+            h_sut, h_isabet = son_5_mac_formu(ham_veri, h_takim)
+            a_sut, a_isabet = son_5_mac_formu(ham_veri, a_takim)
 
-            # Lambda değerlerini bul
-            ornek_ev = pd.DataFrame({'Takim': [h_takim], 'Rakip': [a_takim], 'Saha': ['Ev'], 'Sut': [h_ortalama_sut]})
-            ornek_dep = pd.DataFrame({'Takim': [a_takim], 'Rakip': [h_takim], 'Saha': ['Dep'], 'Sut': [a_ortalama_sut]})
+            ornek_ev = pd.DataFrame({'Takim': [h_takim], 'Rakip': [a_takim], 'Saha': ['Ev'], 'Sut': [h_sut], 'IsabetliSut': [h_isabet]})
+            ornek_dep = pd.DataFrame({'Takim': [a_takim], 'Rakip': [h_takim], 'Saha': ['Dep'], 'Sut': [a_sut], 'IsabetliSut': [a_isabet]})
 
             beklenen_ev = model.predict(ornek_ev)[0]
             beklenen_dep = model.predict(ornek_dep)[0]
             beklenen_toplam = beklenen_ev + beklenen_dep
 
-            # Metrikleri Ekrana Bas
             st.subheader(f"📊 Beklenen Değerler (λ)")
             m1, m2, m3 = st.columns(3)
-            m1.metric(label=f"{h_takim} Korner", value=f"{beklenen_ev:.2f}", delta=f"{h_ortalama_sut:.1f} Şut Baskısı")
-            m2.metric(label=f"{a_takim} Korner", value=f"{beklenen_dep:.2f}", delta=f"{a_ortalama_sut:.1f} Şut Baskısı", delta_color="off")
-            m3.metric(label="Toplam Korner (Beklenen)", value=f"{beklenen_toplam:.2f}")
+            # Metriklerde takımların güncel formlarını da gösteriyoruz
+            m1.metric(label=f"{h_takim} Korner", value=f"{beklenen_ev:.2f}", delta=f"Son 5 Maç: {h_isabet:.1f} İsabetli Şut")
+            m2.metric(label=f"{a_takim} Korner", value=f"{beklenen_dep:.2f}", delta=f"Son 5 Maç: {a_isabet:.1f} İsabetli Şut", delta_color="off")
+            m3.metric(label="Toplam Korner", value=f"{beklenen_toplam:.2f}")
 
-            # PMF Dağılım Grafiği (Bar Chart)
             st.divider()
-            st.subheader("📈 Toplam Korner Olasılık Dağılımı (PMF)")
+            st.subheader("📈 Güncel Korner Olasılık Dağılımı")
             
             pmf_verileri = {}
             for k in range(5, 16):
                 olasilik = poisson.pmf(k, beklenen_toplam) * 100
                 pmf_verileri[f"{k} Korner"] = olasilik
 
-            # Grafiği çizdir (Streamlit'in kendi şık bar chart bileşeni)
             chart_df = pd.DataFrame(list(pmf_verileri.values()), index=list(pmf_verileri.keys()), columns=["İhtimal (%)"])
             st.bar_chart(chart_df)
+
+except Exception as e:
+    st.error(f"Veri çekilirken bir hata oluştu. Sezon başı verisi eksik olabilir. Detay: {e}")
