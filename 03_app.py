@@ -3,7 +3,11 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import poisson
 import urllib.request
+import io
 import ssl
+
+# 1. KESİN ÇÖZÜM: Mac ve Python'un SSL güvenlik duvarını küresel olarak esnetiyoruz
+ssl._create_default_https_context = ssl._create_unverified_context
 
 st.set_page_config(page_title="Korner Tahmin Motoru PRO", layout="centered")
 st.title("⚽ Korner Beklentisi (Poisson) PRO")
@@ -28,25 +32,22 @@ url_bu = f"https://www.football-data.co.uk/mmz4281/2627/{kod}.csv"
 
 @st.cache_data(ttl=3600)
 def veri_cek_ve_egit(url1, url2):
-    # Bot olmadığımızı kanıtlamak için Chrome tarayıcı kimliği gönderiyoruz
+    # 2. KESİN ÇÖZÜM: Siteye "Ben bir bot değilim, Mac tarayıcısıyım" diyoruz
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
+    
+    # Veriyi direkt pandas ile değil, kimlik göstererek ham metin olarak indiriyoruz
     req1 = urllib.request.Request(url1, headers=headers)
-    res1 = urllib.request.urlopen(req1, context=ctx)
-    df_gecen = pd.read_csv(res1)
+    res1 = urllib.request.urlopen(req1).read().decode('utf-8')
+    df_gecen = pd.read_csv(io.StringIO(res1))
 
     req2 = urllib.request.Request(url2, headers=headers)
-    res2 = urllib.request.urlopen(req2, context=ctx)
-    df_bu = pd.read_csv(res2)
+    res2 = urllib.request.urlopen(req2).read().decode('utf-8')
+    df_bu = pd.read_csv(io.StringIO(res2))
     
     df = pd.concat([df_gecen, df_bu], ignore_index=True)
     
-    # İsabetli Şut (HST) verisi Türkiye ligi gibi bazı liglerde olmadığı için güvenlik kontrolü:
-    sutunlar = df.columns
-    if 'HST' in sutunlar and 'AST' in sutunlar:
+    # Türkiye ligi gibi isabetli şut (HST) tutmayan ligler için çökmeyi engelleyen sistem
+    if 'HST' in df.columns and 'AST' in df.columns:
         gerekli = df[['HomeTeam', 'AwayTeam', 'HC', 'AC', 'HS', 'AS', 'HST', 'AST']].dropna()
         form_etiket = "İsabetli Şut"
         hesap_formulu = "Korner ~ Takim + Rakip + Saha + Sut + IsabetliSut"
@@ -67,7 +68,7 @@ def veri_cek_ve_egit(url1, url2):
 
 try:
     model, gecerli_takimlar, ham_veri, form_turu = veri_cek_ve_egit(url_gecen, url_bu)
-    st.success(f"✅ {secilen_lig_adi} güncel verileri canlı olarak çekildi.")
+    st.success(f"✅ {secilen_lig_adi} verileri başarıyla çekildi.")
     st.divider()
 
     def son_5_mac_formu(df, takim):
